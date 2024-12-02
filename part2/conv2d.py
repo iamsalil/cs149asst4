@@ -35,44 +35,133 @@ The shape of the output should be [batch_size, out_channels, out_pool_height, ou
 """
 
 @nki.jit
-def fused_conv2d_maxpool(X, W, bias, pool_size=1):
+def fused_conv2d_maxpool(X, F, bias, pool_size=1):
+    B, C, H, W = X.shape
+    O, C_, K, K_ = F.shape
+    O_ = bias.shape[0]
 
-    batch_size, in_channels, input_height, input_width = X.shape
-    out_channels, in_channels_, filter_height, filter_width = W.shape
-    out_channels_ = bias.shape[0]
+    assert(C == C_)
+    assert(K == K_)
+    assert(O == O_)
+    assert(C % 128 == 0)
+    assert(O % 128 == 0)
 
-    assert (
-        in_channels_ == in_channels and out_channels_ == out_channels
-    ), f"Shape mismatch. {in_channels}, {in_channels_}, {out_channels}, {out_channels_}"
+    H_out = H - K + 1
+    W_out = W - K + 1
 
-    out_height = input_height - filter_height + 1
-    out_width = input_width - filter_width + 1
-
-    out_pool_height = out_height // pool_size
-    out_pool_width = out_width // pool_size
+    H_pool = H_out // pool_size
+    W_pool = W_out // pool_size
     
-    # Can assume multiple of 128 to avoid using mask
-    assert in_channels % 128 == 0
-
     # Can assume one PSUM bank can at least fit one row of the pixels
-    assert nl.tile_size.gemm_moving_fmax >= out_width
-
-    # Initialize output array
-    X_out = nl.ndarray(
-        shape=(batch_size, out_channels, out_pool_height, out_pool_width),
-        dtype=X.dtype,
-        buffer=nl.hbm,
-    )
+    assert(nl.tile_size.gemm_moving_fmax >= W_out)
 
     # Various tiling dimensions (You may want to define more of them)
-    c_in_pmax = nl.tile_size.pmax
-    n_tiles_c_in = in_channels // c_in_pmax
+    C_tile = nl.tile_size.pmax # 128
+    n_Ctiles = C // C_tile
 
-    # Process the images in batches
-    for b in nl.affine_range(batch_size):
+    O_tile = nl.tile_size.pmax # 128
+    n_Otiles = O // O_tile
+
+    n_rowpairs = H_out // 2
+
+    datatype = X.dtype
+    datasize = datatype.itemsize
+
+    # Print things as needed
+    print("\n")
+    print(B, C, H, W)
+    print(O, C, K)
+    print(H_out, W_out)
+    print(pool_size, H_pool, W_pool)
+    print(C_tile, n_Ctiles)
+    print(O_tile, n_Otiles)
+    print(n_rowpairs)
+    print(datatype, datasize)
+    print(physical_alloc_C, physical_alloc_K)
+
+    # Initialize output array
+    X_out = nl.ndarray(shape=(B, O, H_pool, W_pool), dtype=datatype, buffer=nl.hbm)
+
+    # SBUF allocations
+    base_address = 0
+
+    input_tiles = nl.ndarray((K+1, n_Ctiles, nl.par_dim(C_tile), W), dtype=datatype,
+            buffer=ncc.sbuf.mod_alloc(base_addr=base_address, num_free_tiles=(2, n_Ctiles)))
+    base_address += 2 * n_Ctiles * W * datasize
+
+    conv_tiles = nl.ndarray((K, K, n_Ctiles, nl.par_dim(C_tile), O_tile), dtype=datatype,
+            buffer=ncc.sbuf.mod_alloc(base_addr=base_address, num_free_tiles=(1, 1, n_Ctiles)))
+    base_address += n_Ctiles * O_tile * datasize
+
+    output_tiles = nl.ndarray((2, nl.par_dim(O_tile), W_out), dtype=datatype,
+            buffer=ncc.sbuf.mod_alloc(base_addr=base_address, num_free_tiles=(2, )))
+    base_address += 2 * W_out * datasize
+
+    pool_tiles = nl.ndarray((2//pool_size, nl.par_dim(O_tile), W_pool), dtype=datatype,
+            buffer=ncc.sbuf.mod_alloc(base_addr=base_address, num_free_tiles=(2//pool_size)))
+    base_address += (2//pool_size) * W_pool * datasize
+
+    for b in nl.affine_range(B):
+        for o in nl.affine_range(N_Otiles):
+            o_start = o*O_tile
+            o_end = (o+1)*O_tile
+            for r in nl.affine_range(n_rowpairs):
+                toprow = 2*r
+                output_tiles[...] = 0 # Need to reset output
+                for ki in nl.sequential_range(K):
+                    for kj in nl.sequential_range(K):
+                        res_psum = nl.zeros((O_tile, W_out), dtype=datatype, buffer=nl.psum)
+                        for c in nl.affine_range(n_Ctiles):
+                            c_start = c*C_tile
+                            c_end = (c+1)*C_tile
+                            input_tiles[ki, c] = nl.load(X[b, toprow+ki, :, c_start:c_end])
+                            input_tiles[ki+1, c] = nl.load(X[b, toprow+ki+1, :, c_start:c_end])
+                            conv_tiles[ki, kj, c] = nl.load(F[o_start:o_end, c_start:c_end, ki, kj])
+                            res_psum += nl.matmul(input_tiles
+
+                            input_tiles[ki+1, c, :, :] = nl.load(F
+                            C_start = C_i
+                            input_tiles[K_i, C_i, :, :] = nl.load(
+                # Allocate input tiles
+
+        # Load image X[b]
+        X_b = X[b] # (C, H, W)
+        print(f"{b} {X_b.shape}")
+        # Do all loops through out filters
+        for o in nl.affine_range(n_Otiles):
+            # Load filter block
+            F_o = F[o*O_tile:(o+1)*O_tile] # (O_tile, C, K, K)
+            print(f"\t- {o} {F_o.shape}")
+            # Go through all row pairs
+            # for r in nl.affine_range(n_rowpairs):
+                # Allocate out memory appropriately
+                
+                # Get row pair into SBUF
+                # Loop through K (affine)
+                    # Loop through K (affine)
+                        # Top row
+                        # Loop through C (sequential)
+                            # Perform matrix multiply
+                            # Accumulate C
+                        # Take C sum and accumulate into K
+
+                        # Bottom row
+                        # Loop through C (sequential)
+                            # Perform matrix multiply
+                            # Accumulate C
+                        # Take C sum and accumulate into K
+                # Take K sum and do max pooling
+                # Store final result for that row pair and those filters
+        i_O = nl.arange(O_tile)[:, None]
+        i_length = nl.arange(H_pool*W_pool)[None, :]
+        temp = nl.ndarray((nl.par_dim(O_tile), H_pool*W_pool), dtype=X.dtype, buffer=nl.sbuf)
+        temp[...] = nl.load(X_b_flattened[i_O, i_length])
+        temp *= 2
+        nl.store(X_out[b], value=temp)
+
         # TODO: Perform the convolution of X[b] with the weights W and bias b, followed by a maxpool
         # and store the result in X_out[b]
-        continue
+        # continue
 
     return X_out
 
