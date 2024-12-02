@@ -36,6 +36,7 @@ The shape of the output should be [batch_size, out_channels, out_pool_height, ou
 
 @nki.jit
 def fused_conv2d_maxpool(X, F, bias, pool_size=1):
+    # Process input sizes
     B, C, H, W = X.shape
     O, C_, K, K_ = F.shape
     O_ = bias.shape[0]
@@ -46,16 +47,16 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
     assert(C % 128 == 0)
     assert(O % 128 == 0)
 
+    # Define output dimensions
     H_out = H - K + 1
     W_out = W - K + 1
-
     H_pool = H_out // pool_size
     W_pool = W_out // pool_size
     
     # Can assume one PSUM bank can at least fit one row of the pixels
     assert(nl.tile_size.gemm_moving_fmax >= W_out)
-
-    # Various tiling dimensions (You may want to define more of them)
+ 
+    # Define tiling dimensions
     C_tile = nl.tile_size.pmax # 128
     n_Ctiles = C // C_tile
 
@@ -77,91 +78,97 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
     print(O_tile, n_Otiles)
     print(n_rowpairs)
     print(datatype, datasize)
-    print(physical_alloc_C, physical_alloc_K)
 
     # Initialize output array
     X_out = nl.ndarray(shape=(B, O, H_pool, W_pool), dtype=datatype, buffer=nl.hbm)
 
-    # SBUF allocations
-    base_address = 0
+    # Normal allocations
+    input_tiles = nl.ndarray(
+        (K+1, n_Ctiles, nl.par_dim(C_tile), W),
+        dtype=datatype, buffer=nl.sbuf
+    )
+    kernel_tiles = nl.ndarray(
+        (K, K, n_Ctiles, nl.par_dim(C_tile), O_tile),
+        dtype=datatype, buffer=nl.sbuf
+    )
+    bias_tile = nl.ndarray(
+        (nl.par_dim(O_tile), ),
+        dtype=datatype, buffer=nl.sbuf
+    )
+    out_tiles = nl.ndarray(
+        (2, nl.par_dim(O_tile), W_out),
+        dtype=datatype, buffer=nl.sbuf
+    )
 
-    input_tiles = nl.ndarray((K+1, n_Ctiles, nl.par_dim(C_tile), W), dtype=datatype,
-            buffer=ncc.sbuf.mod_alloc(base_addr=base_address, num_free_tiles=(2, n_Ctiles)))
-    base_address += 2 * n_Ctiles * W * datasize
+    # Pooling allocations
+    if pool_size == 2:
+        pool_tiles = nl.ndarray(
+            (nl.par_dim(O_tile), W_pool),
+            dtype=datatype, buffer=nl.sbuf
+        )
+        i_0 = nl.arange(1)[:, None, None, None, None]
+        i_1 = nl.arange(2)[None, :, None, None, None]
+        i_2 = nl.arange(O_tile)[None, None, :, None, None]
+        i_3 = nl.arange(W_pool)[None, None, None, :, None]
+        i_4 = nl.arange(2)[None, None, None, None, :]
 
-    conv_tiles = nl.ndarray((K, K, n_Ctiles, nl.par_dim(C_tile), O_tile), dtype=datatype,
-            buffer=ncc.sbuf.mod_alloc(base_addr=base_address, num_free_tiles=(1, 1, n_Ctiles)))
-    base_address += n_Ctiles * O_tile * datasize
-
-    output_tiles = nl.ndarray((2, nl.par_dim(O_tile), W_out), dtype=datatype,
-            buffer=ncc.sbuf.mod_alloc(base_addr=base_address, num_free_tiles=(2, )))
-    base_address += 2 * W_out * datasize
-
-    pool_tiles = nl.ndarray((2//pool_size, nl.par_dim(O_tile), W_pool), dtype=datatype,
-            buffer=ncc.sbuf.mod_alloc(base_addr=base_address, num_free_tiles=(2//pool_size)))
-    base_address += (2//pool_size) * W_pool * datasize
-
+    # For each image
     for b in nl.affine_range(B):
-        for o in nl.affine_range(N_Otiles):
+        # For each group of kernels
+        for o in nl.affine_range(n_Otiles):
             o_start = o*O_tile
             o_end = (o+1)*O_tile
+            # Load kernel
+            for ki in nl.affine_range(K):
+                for kj in nl.affine_range(K):
+                    for c in nl.affine_range(n_Ctiles):
+                        c_start = c*C_tile
+                        c_end = (c+1)*C_tile
+                        for oi in nl.affine_range(O_tile):
+                            kernel_tiles[ki, kj, c, :, oi] = nl.load(W[o_start+oi, c_start:c_end, ki, kj])
+            # Load bias
+            bias_tile = nl.load(bias[o_start:o_end])
+            # For each row pair
             for r in nl.affine_range(n_rowpairs):
                 toprow = 2*r
-                output_tiles[...] = 0 # Need to reset output
-                for ki in nl.sequential_range(K):
-                    for kj in nl.sequential_range(K):
-                        res_psum = nl.zeros((O_tile, W_out), dtype=datatype, buffer=nl.psum)
+                # Load input data
+                for h in nl.affine_range(K+1):
+                    for w in nl.affine_range(W):
                         for c in nl.affine_range(n_Ctiles):
                             c_start = c*C_tile
                             c_end = (c+1)*C_tile
-                            input_tiles[ki, c] = nl.load(X[b, toprow+ki, :, c_start:c_end])
-                            input_tiles[ki+1, c] = nl.load(X[b, toprow+ki+1, :, c_start:c_end])
-                            conv_tiles[ki, kj, c] = nl.load(F[o_start:o_end, c_start:c_end, ki, kj])
-                            res_psum += nl.matmul(input_tiles
-
-                            input_tiles[ki+1, c, :, :] = nl.load(F
-                            C_start = C_i
-                            input_tiles[K_i, C_i, :, :] = nl.load(
-                # Allocate input tiles
-
-        # Load image X[b]
-        X_b = X[b] # (C, H, W)
-        print(f"{b} {X_b.shape}")
-        # Do all loops through out filters
-        for o in nl.affine_range(n_Otiles):
-            # Load filter block
-            F_o = F[o*O_tile:(o+1)*O_tile] # (O_tile, C, K, K)
-            print(f"\t- {o} {F_o.shape}")
-            # Go through all row pairs
-            # for r in nl.affine_range(n_rowpairs):
-                # Allocate out memory appropriately
-                
-                # Get row pair into SBUF
-                # Loop through K (affine)
-                    # Loop through K (affine)
-                        # Top row
-                        # Loop through C (sequential)
-                            # Perform matrix multiply
-                            # Accumulate C
-                        # Take C sum and accumulate into K
-
-                        # Bottom row
-                        # Loop through C (sequential)
-                            # Perform matrix multiply
-                            # Accumulate C
-                        # Take C sum and accumulate into K
-                # Take K sum and do max pooling
-                # Store final result for that row pair and those filters
-        i_O = nl.arange(O_tile)[:, None]
-        i_length = nl.arange(H_pool*W_pool)[None, :]
-        temp = nl.ndarray((nl.par_dim(O_tile), H_pool*W_pool), dtype=X.dtype, buffer=nl.sbuf)
-        temp[...] = nl.load(X_b_flattened[i_O, i_length])
-        temp *= 2
-        nl.store(X_out[b], value=temp)
-
-        # TODO: Perform the convolution of X[b] with the weights W and bias b, followed by a maxpool
-        # and store the result in X_out[b]
-        # continue
+                            input_tiles[h, c, :, w] = nl.load(X[b, c_start:c_end, toprow+h, w])
+                # Do top row convolution
+                out_tiles[0] = 0
+                for ki in nl.affine_range(K):
+                    for kj in nl.affine_range(K):
+                        res_psum = nl.zeros((O_tile, W_out), nl.float32, buffer=nl.psum)
+                        for c in nl.affine_range(n_Ctiles):
+                            res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki, c, :, kj:kj+W_out])
+                        out_tiles[0] = nl.copy(res_psum, dtype=out_tiles.dtype)
+                # Do bottom row convolution
+                out_tiles[1] = 0
+                for ki in nl.affine_range(K):
+                    for kj in nl.affine_range(K):
+                        res_psum = nl.zeros((O_tile, W_out), nl.float32, buffer=nl.psum)
+                        for c in nl.affine_range(n_Ctiles):
+                            res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki+1, c, :, kj:kj+W_out])
+                        out_tiles[1] = nl.copy(res_psum, dtype=out_tiles.dtype)
+                # Do pooling
+                if pool_size == 1:
+                    # Don't do pooling
+                    # Add bias
+                    pool_tiles += bias_tile
+                    # Store results
+                    nl.store(X_out[b, o_start:o_end, toprow, :], out_tiles[0])
+                    nl.store(X_out[b, o_start:o_end, toprow+1, :], out_tiles[1])
+                elif pool_size == 2:
+                    # Do pooling
+                    pool_tiles = nl.max(out_tiles[2*i_0+i_1, i_2, 2*i_3+i_4], axis=[1, 4])
+                    # Add bias
+                    pool_tiles += bias_tile
+                    # Store results
+                    nl.store(X_out[b, o_start:o_end, r, :], pool_tiles)
 
     return X_out
 
