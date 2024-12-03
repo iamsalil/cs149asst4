@@ -76,10 +76,20 @@ def conv2d_myref(X, F, bias, pad_size=0, pool_size=2):
             for r in range(n_rowpairs):
                 toprow = 2*r
                 # (1) Load input data
-                for h in range(K+1):
+                if r == 0:
+                    for h in range(K+1):
+                        for w in range(W):
+                            for c in range(n_Ctiles):
+                                input_tiles[h, c, :, w] = X[b, c_start:c_end, toprow+h, w]
+                else:
+                    for h in range(K):
+                        for c in range(n_Ctiles):
+                            input_tiles[h, c] = input_tiles[h+1, c]
                     for w in range(W):
                         for c in range(n_Ctiles):
-                            input_tiles[h, c, :, w] = X[b, c_start:c_end, toprow+h, w]
+                            c_start = c*C_tile
+                            c_end = (c+1)*C_tile
+                            input_tiles[K, c, :, w] = X[b, c_start:c_end, toprow+K, w]
                 # (2) Do top row convolution
                 out_tiles[0] = 0
                 for ki in range(K):
@@ -87,7 +97,7 @@ def conv2d_myref(X, F, bias, pad_size=0, pool_size=2):
                         res_psum = np.zeros((O_tile, W_out))
                         for c in range(n_Ctiles):
                             res_psum += kernel_tiles[ki, kj, c].T@input_tiles[ki, c, :, kj:kj+W_out]
-                        out_tiles[0] = res_psum
+                        out_tiles[0] += res_psum
                 # (3) Do bottom row convolution
                 out_tiles[1] = 0
                 for ki in range(K):
@@ -95,7 +105,7 @@ def conv2d_myref(X, F, bias, pad_size=0, pool_size=2):
                         res_psum = np.zeros((O_tile, W_out))
                         for c in range(n_Ctiles):
                             res_psum += kernel_tiles[ki, kj, c].T@input_tiles[ki+1, c, :, kj:kj+W_out]
-                        out_tiles[1] = res_psum
+                        out_tiles[1] += res_psum
                 if (b == 0) and (r == 0) and (o == 0):
                     print(input_tiles[:3, 0, 0, :5])
                     print(X[0, 0, :3, :5])

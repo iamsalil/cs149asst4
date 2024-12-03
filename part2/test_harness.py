@@ -82,21 +82,21 @@ def test_correctness_conv2d_kernel(
                         args = [X, W, bias]
                         kwargs = {"pool_size": pool_size}
 
-                        print("doing my kernel...")
+                        # print("doing my kernel...")
                         out = kernel(*args, **kwargs)
-                        print("doing ref kernel...")
+                        # print("doing ref kernel...")
                         out_ref = ref_impl(*args, **kwargs)
-                        print("doing my ref kernel...")
-                        my_ref = conv2d_myref(*args, **kwargs)
+                        # print("doing my ref kernel...")
+                        # my_ref = conv2d_myref(*args, **kwargs)
 
-                        print(out_ref[0, 0, :3, :3])
-                        print(my_ref[0, 0, :3, :3])
+                        # print(out_ref[0, 0, :3, :3])
+                        # print(my_ref[0, 0, :3, :3])
 
-                        print(out.shape, out_ref.shape, my_ref.shape)
-                        print(np.allclose(out_ref, my_ref))
-                        print(np.allclose(out, out_ref))
-                        print(np.allclose(out, my_ref))
-                        assert(False)
+                        # print(out.shape, out_ref.shape, my_ref.shape)
+                        # print(np.allclose(out_ref, my_ref))
+                        # print(np.allclose(out, out_ref))
+                        # print(np.allclose(out, my_ref))
+                        # assert(False)
 
                         if not np.allclose(out, out_ref):
                             print(
