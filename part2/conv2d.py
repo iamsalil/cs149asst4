@@ -119,30 +119,30 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
             # For each row pair
             for r in nl.sequential_range(n_rowpairs):
                 toprow = 2*r
-                # Load input data
-                for h in nl.affine_range(K+1):
-                    for w in nl.affine_range(W):
-                        for c in nl.affine_range(n_Ctiles):
+                # (1) Load input data
+                for h in nl.sequential_range(K+1):
+                    for w in nl.sequential_range(W):
+                        for c in nl.sequential_range(n_Ctiles):
                             c_start = c*C_tile
                             c_end = (c+1)*C_tile
                             input_tiles[h, c, :, w] = nl.load(X[b, c_start:c_end, toprow+h, w])
-                # Do top row convolution
+                # (2) Do top row convolution
                 out_tiles[0] = 0
                 for ki in nl.sequential_range(K):
                     for kj in nl.sequential_range(K):
                         res_psum = nl.zeros((O_tile, W_out), nl.float32, buffer=nl.psum)
                         for c in nl.affine_range(n_Ctiles):
-                            res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki, c, :, kj:kj+W_out])
+                            res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki, c, :, kj:kj+W_out], transpose_x=True)
                         out_tiles[0] = nl.copy(res_psum, dtype=out_tiles.dtype)
-                # Do bottom row convolution
+                # (3) Do bottom row convolution
                 out_tiles[1] = 0
                 for ki in nl.sequential_range(K):
                     for kj in nl.sequential_range(K):
                         res_psum = nl.zeros((O_tile, W_out), nl.float32, buffer=nl.psum)
                         for c in nl.affine_range(n_Ctiles):
-                            res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki+1, c, :, kj:kj+W_out])
+                            res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki+1, c, :, kj:kj+W_out], transpose_x=True)
                         out_tiles[1] = nl.copy(res_psum, dtype=out_tiles.dtype)
-                # Do pooling
+                # (4) Do pooling
                 if pool_size == 1:
                     # Don't do pooling
                     # Add bias
