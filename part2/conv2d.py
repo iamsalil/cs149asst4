@@ -97,17 +97,18 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
         (nl.par_dim(O_tile), 1),
         dtype=datatype, buffer=nl.sbuf
     )
-    out_tiles = nl.ndarray(
+    '''
+    out_tiles = nl.zeros(
         (2, nl.par_dim(O_tile), W_out),
         dtype=datatype, buffer=nl.sbuf
     )
+    '''
+    
 
     # Pooling allocations
     if pool_size == 2:
-        pool_tiles = nl.ndarray(
-            (1, nl.par_dim(O_tile), W_pool),
-            dtype=datatype, buffer=nl.sbuf
-        )
+        pool_tile = nl.zeros((nl.par_dim(O_tile), W_pool), dtype=datatype, buffer=nl.sbuf)
+        temp_pool = nl.zeros((nl.par_dim(O_tile), 4), dtype=datatype, buffer=nl.sbuf)
         i_0 = nl.arange(1)[:, None, None, None, None]
         i_1 = nl.arange(2)[None, :, None, None, None]
         i_2 = nl.arange(O_tile)[None, None, :, None, None]
@@ -117,16 +118,16 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
     # For each image
     for b in nl.sequential_range(B):
         # For each group of kernels
-        for o in nl.sequential_range(n_Otiles):
+        for o in nl.sequential_range(n_Otiles): 
             o_start = o*O_tile
             o_end = (o+1)*O_tile
             # Load kernel
             for ki in nl.sequential_range(K):
                 for kj in nl.sequential_range(K):
-                    for c in nl.affine_range(n_Ctiles):
+                    for c in nl.sequential_range(n_Ctiles):
                         c_start = c*C_tile
                         c_end = (c+1)*C_tile
-                        for oi in nl.affine_range(O_tile):
+                        for oi in nl.sequential_range(O_tile):
                             kernel_tiles[ki, kj, c, :, oi] = nl.load(F[o_start+oi, c_start:c_end, ki, kj])
             # Load bias
             bias_tile[...] = nl.load(bias[o_start:o_end])
@@ -134,39 +135,34 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
             for r in nl.sequential_range(n_rowpairs):
                 toprow = 2*r
                 # (1) Load input data
-                if r == 0:
-                    for h in nl.sequential_range(K+1):
-                        for w in nl.sequential_range(W):
-                            for c in nl.sequential_range(n_Ctiles):
-                                c_start = c*C_tile
-                                c_end = (c+1)*C_tile
-                                input_tiles[h, c, :, w] = nl.load(X[b, c_start:c_end, toprow+h, w])
-                else:
-                    for h in nl.sequential_range(K-1):
-                        for c in nl.sequential_range(n_Ctiles):
-                            input_tiles[h, c] = input_tiles[h+2, c]
+                for h in nl.sequential_range(K+1):
                     for w in nl.sequential_range(W):
                         for c in nl.sequential_range(n_Ctiles):
                             c_start = c*C_tile
                             c_end = (c+1)*C_tile
-                            input_tiles[K-1, c, :, w] = nl.load(X[b, c_start:c_end, toprow+K-1, w])
-                            input_tiles[K, c, :, w] = nl.load(X[b, c_start:c_end, toprow+K, w])
+                            input_tiles[h, c, :, w] = nl.load(X[b, c_start:c_end, toprow+h, w])
+                out_tiles = nl.zeros((2, nl.par_dim(O_tile), W_out), dtype=datatype, buffer=nl.sbuf)
+                # nl.device_print("rowpair r: ", r)
                 # (2) Do top row convolution
-                out_tiles[0] = 0
+                # out_tiles[0] = nl.multiply(out_tiles[0], 0)
+                # nl.device_print("outtiles_0", out_tiles[0])
                 for ki in nl.sequential_range(K):
                     for kj in nl.sequential_range(K):
                         res_psum = nl.zeros((O_tile, W_out), nl.float32, buffer=nl.psum)
-                        for c in nl.affine_range(n_Ctiles):
+                        for c in nl.sequential_range(n_Ctiles):
                             res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki, c, :, kj:kj+W_out], transpose_x=True)
-                        out_tiles[0] += nl.copy(res_psum, dtype=out_tiles.dtype)
+                        temp = nl.copy(res_psum, dtype=out_tiles.dtype)
+                        out_tiles[0] = nl.add(out_tiles[0], temp)
                 # (3) Do bottom row convolution
-                out_tiles[1] = 0
+                # out_tiles[1] = nl.multiply(out_tiles[1], 0)
+                # nl.device_print("outtiles_1", out_tiles[1])
                 for ki in nl.sequential_range(K):
                     for kj in nl.sequential_range(K):
                         res_psum = nl.zeros((O_tile, W_out), nl.float32, buffer=nl.psum)
-                        for c in nl.affine_range(n_Ctiles):
+                        for c in nl.sequential_range(n_Ctiles):
                             res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki+1, c, :, kj:kj+W_out], transpose_x=True)
-                        out_tiles[1] += nl.copy(res_psum, dtype=out_tiles.dtype)
+                        temp = nl.copy(res_psum, dtype=out_tiles.dtype)
+                        out_tiles[1] = nl.add(out_tiles[1], temp)
                 # (4) Do pooling
                 if pool_size == 1:
                     # Don't do pooling
@@ -178,13 +174,16 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
                     nl.store(X_out[b, o_start:o_end, toprow+1, :], out_tiles[1])
                 elif pool_size == 2:
                     # Do pooling
-                    pool_tiles = nl.max(out_tiles[2*i_0+i_1, i_2, 2*i_3+i_4], axis=[1, 4])
+                    for w in nl.sequential_range(W_pool):
+                        temp_pool[:, 0] = out_tiles[0, :, 2*w]
+                        temp_pool[:, 1] = out_tiles[1, :, 2*w]
+                        temp_pool[:, 2] = out_tiles[0, :, 2*w+1]
+                        temp_pool[:, 3] = out_tiles[1, :, 2*w+1]
+                        pool_tile[:, w] = nl.max(temp_pool, axis=[1])
                     # Add bias
-                    print(bias_tile.shape, pool_tiles.shape)
-                    pool_tiles[0] += bias_tile
-                    # pool_tiles += bias_tile
+                    pool_tile[...] = nl.add(pool_tile, bias_tile)
                     # Store results
-                    nl.store(X_out[b, o_start:o_end, r, :], pool_tiles[0])
+                    nl.store(X_out[b, o_start:o_end, r, :], pool_tile)
 
     return X_out
 

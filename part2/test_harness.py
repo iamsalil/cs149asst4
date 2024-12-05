@@ -82,20 +82,16 @@ def test_correctness_conv2d_kernel(
                         args = [X, W, bias]
                         kwargs = {"pool_size": pool_size}
 
-                        # print("doing my kernel...")
+                        print(f"----- {input_channels} {output_channels} -----")
+                        print("doing my kernel...")
                         out = kernel(*args, **kwargs)
-                        # print("doing ref kernel...")
+                        print(out.shape)
+                        print(out[0, -1, :5, :5])
+                        print("doing ref kernel...")
                         out_ref = ref_impl(*args, **kwargs)
-                        # print("doing my ref kernel...")
-                        # my_ref = conv2d_myref(*args, **kwargs)
-
-                        # print(out_ref[0, 0, :3, :3])
-                        # print(my_ref[0, 0, :3, :3])
-
-                        # print(out.shape, out_ref.shape, my_ref.shape)
-                        # print(np.allclose(out_ref, my_ref))
-                        # print(np.allclose(out, out_ref))
-                        # print(np.allclose(out, my_ref))
+                        print(out_ref.shape)
+                        print(out_ref[0, -1, :5, :5])
+                        print(np.allclose(out, out_ref))
                         # assert(False)
 
                         if not np.allclose(out, out_ref):
@@ -188,6 +184,7 @@ if __name__ == "__main__":
     if args.simulate:
         conv2d = simulate_kernel_wrapper(conv2d)
     # running correctness tests
+    
     print(
         "Running correctness test for conv2d kernel with smaller images...",
         end="",
@@ -222,7 +219,7 @@ if __name__ == "__main__":
         print("Passed 😍")
     else:
         print("Failed 😢")
-
+    
     if args.test_maxpool:
         print(
             "Running correctness test for conv2d kernel with larger images + bias + maxpool...",
