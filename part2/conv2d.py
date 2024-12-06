@@ -97,13 +97,10 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
         (nl.par_dim(O_tile), 1),
         dtype=datatype, buffer=nl.sbuf
     )
-    '''
     out_tiles = nl.zeros(
         (2, nl.par_dim(O_tile), W_out),
         dtype=datatype, buffer=nl.sbuf
-    )
-    '''
-    
+    ) 
 
     # Pooling allocations
     if pool_size == 2:
@@ -122,12 +119,12 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
             o_start = o*O_tile
             o_end = (o+1)*O_tile
             # Load kernel
-            for ki in nl.sequential_range(K):
-                for kj in nl.sequential_range(K):
-                    for c in nl.sequential_range(n_Ctiles):
+            for ki in nl.affine_range(K):
+                for kj in nl.affine_range(K):
+                    for c in nl.affine_range(n_Ctiles):
                         c_start = c*C_tile
                         c_end = (c+1)*C_tile
-                        for oi in nl.sequential_range(O_tile):
+                        for oi in nl.affine_range(O_tile):
                             kernel_tiles[ki, kj, c, :, oi] = nl.load(F[o_start+oi, c_start:c_end, ki, kj])
             # Load bias
             bias_tile[...] = nl.load(bias[o_start:o_end])
@@ -135,32 +132,28 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
             for r in nl.sequential_range(n_rowpairs):
                 toprow = 2*r
                 # (1) Load input data
-                for h in nl.sequential_range(K+1):
-                    for w in nl.sequential_range(W):
-                        for c in nl.sequential_range(n_Ctiles):
+                for h in nl.affine_range(K+1):
+                    for w in nl.affine_range(W):
+                        for c in nl.affine_range(n_Ctiles):
                             c_start = c*C_tile
                             c_end = (c+1)*C_tile
                             input_tiles[h, c, :, w] = nl.load(X[b, c_start:c_end, toprow+h, w])
-                out_tiles = nl.zeros((2, nl.par_dim(O_tile), W_out), dtype=datatype, buffer=nl.sbuf)
-                # nl.device_print("rowpair r: ", r)
                 # (2) Do top row convolution
-                # out_tiles[0] = nl.multiply(out_tiles[0], 0)
-                # nl.device_print("outtiles_0", out_tiles[0])
+                out_tiles[0] = nl.multiply(out_tiles[0], 0)
                 for ki in nl.sequential_range(K):
                     for kj in nl.sequential_range(K):
                         res_psum = nl.zeros((O_tile, W_out), nl.float32, buffer=nl.psum)
                         for c in nl.sequential_range(n_Ctiles):
-                            res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki, c, :, kj:kj+W_out], transpose_x=True)
+                            res_psum[...] = res_psum + nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki, c, :, kj:kj+W_out], transpose_x=True)
                         temp = nl.copy(res_psum, dtype=out_tiles.dtype)
                         out_tiles[0] = nl.add(out_tiles[0], temp)
                 # (3) Do bottom row convolution
-                # out_tiles[1] = nl.multiply(out_tiles[1], 0)
-                # nl.device_print("outtiles_1", out_tiles[1])
+                out_tiles[1] = nl.multiply(out_tiles[1], 0)
                 for ki in nl.sequential_range(K):
                     for kj in nl.sequential_range(K):
                         res_psum = nl.zeros((O_tile, W_out), nl.float32, buffer=nl.psum)
                         for c in nl.sequential_range(n_Ctiles):
-                            res_psum += nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki+1, c, :, kj:kj+W_out], transpose_x=True)
+                            res_psum[...] = res_psum + nl.matmul(kernel_tiles[ki, kj, c], input_tiles[ki+1, c, :, kj:kj+W_out], transpose_x=True)
                         temp = nl.copy(res_psum, dtype=out_tiles.dtype)
                         out_tiles[1] = nl.add(out_tiles[1], temp)
                 # (4) Do pooling
@@ -174,7 +167,7 @@ def fused_conv2d_maxpool(X, F, bias, pool_size=1):
                     nl.store(X_out[b, o_start:o_end, toprow+1, :], out_tiles[1])
                 elif pool_size == 2:
                     # Do pooling
-                    for w in nl.sequential_range(W_pool):
+                    for w in nl.affine_range(W_pool):
                         temp_pool[:, 0] = out_tiles[0, :, 2*w]
                         temp_pool[:, 1] = out_tiles[1, :, 2*w]
                         temp_pool[:, 2] = out_tiles[0, :, 2*w+1]

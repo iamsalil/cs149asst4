@@ -92,6 +92,8 @@ def test_correctness_conv2d_kernel(
                         print(out_ref.shape)
                         print(out_ref[0, -1, :5, :5])
                         print(np.allclose(out, out_ref))
+                        print(np.allclose(out[:, :128, :, :], out_ref[:, :128, :, :]))
+                        print(np.allclose(out[:, 0, :, :], out_ref[:, 0, :, :]))
                         # assert(False)
 
                         if not np.allclose(out, out_ref):
